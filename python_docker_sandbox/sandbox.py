@@ -40,10 +40,14 @@ class Sandbox:
 
         self.pool = Pool(self.client, image_suffix, min_pool_size, min_available, required_packages, base_image)
         self.pool.build_image()
-        self.pool._ensure_minimum_containers()
+        self.pool.start_respawner()
+        import time
+        time.sleep(5)
 
-        while True:
-            with self.pool.get_container() as container:
-                print(container.exec_run("uname -a"))
-
-            self.pool._ensure_minimum_containers()
+        # self.pool._ensure_minimum_containers()
+        #
+        # while True:
+        #     with self.pool.get_container() as container:
+        #         print(container.exec_run("uname -a"))
+        #
+        #     self.pool._ensure_minimum_containers()

@@ -1,8 +1,12 @@
 import io
 import logging
 import atexit
+import time
 from contextlib import contextmanager
 from collections import deque
+
+from multiprocessing import Process, Queue
+from queue import Empty
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +24,8 @@ class Pool:
 
         self.available_workers = deque([])
         self.running_workers = {}
+        self.respawner_process = None
+        self.respawner_queue = None
 
         atexit.register(self._shutdown_all_containers)
 
@@ -38,6 +44,14 @@ class Pool:
         logger.info("Building image")
         self.client.images.build(fileobj=dockerfile, tag=self.image_name)
         logger.info("Image created")
+
+    def start_respawner(self):
+        self.respawner_queue = Queue()
+        self.respawner_process = Process(target=self._container_respawner_process, args=((self.respawner_queue), ))
+        self.respawner_process.start()
+
+    def stop_respawner(self):
+        self.respawner_queue.put("STOP")
 
     @contextmanager
     def get_container(self):
@@ -76,7 +90,9 @@ class Pool:
         logger.info(f"{len(self.available_workers) + len(self.running_workers)} workers are currently running")
 
     def _shutdown_all_containers(self):
-        # TODO: Stop any threads that may change lists of available/running workers!
+        # Stop respawner process and wait for it to end
+        self.stop_respawner()
+        self.respawner_process.join()
 
         containers_to_stop = list(self.available_workers) + list(self.running_workers.values())
 
@@ -85,3 +101,14 @@ class Pool:
         for container in containers_to_stop:
             logger.info(f"Shutting down container {container.id}")
             container.stop(timeout=self.CONTAINER_STOP_TIMEOUT)
+
+    def _container_respawner_process(self, queue):
+        while True:
+            self._ensure_minimum_containers()
+            time.sleep(0.5)  # TODO: Make this configuraable
+            try:
+                msg = queue.get(block=False, timeout=None)
+                if msg == "STOP":
+                    break
+            except Empty:
+                pass  # We don't care if the queue is empty
