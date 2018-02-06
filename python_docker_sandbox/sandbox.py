@@ -40,9 +40,11 @@ class Sandbox:
 
         self.pool = Pool(self.client, image_suffix, min_pool_size, min_available, required_packages, base_image)
         self.pool.build_image()
-        self.pool.start_respawner()
+        self.pool.start_pool_manager()
+
         import time
-        time.sleep(5)
+        time.sleep(10)
+        self.pool.stop_pool_manager()
 
         # self.pool._ensure_minimum_containers()
         #
