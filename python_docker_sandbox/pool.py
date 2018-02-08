@@ -2,10 +2,11 @@ import io
 import logging
 import time
 from contextlib import contextmanager
-from collections import deque
 
 from multiprocessing import Process, Queue, Manager
 from queue import Empty
+
+import atexit
 
 logger = logging.getLogger(__name__)
 manager = Manager()
@@ -23,9 +24,11 @@ class Pool:
         self.base_image = base_image
 
         self._available_workers = manager.list()
-        self._running_workers = manager.dict()
+        self._running_workers = manager.dict()  # TODO: Is there a better structure than this than a dict?
         self.pool_manager_process = None
         self.pool_manager_queue = None
+
+        atexit.register(self._shutdown_all_containers)  # TODO: Work out why this doesn't work!
 
     def build_image(self):
         # TODO: Validate that this installs the specific package version!
@@ -53,18 +56,22 @@ class Pool:
         self.pool_manager_queue.put("STOP")
         self.pool_manager_process.join()
 
-    # @contextmanager
-    # def get_container(self):
-    #     # TODO: If pool is empty (could happen if _ensure_minimum_containers hasn't yet run), start a new container
-    #     container = self._available_workers.popleft()
-    #     self._running_workers[container.id] = container
-    #     yield container
-    #     # We are now finished with the container so stop it
-    #     del self._running_workers[container.id]
-    #     container.stop(timeout=self.CONTAINER_STOP_TIMEOUT)
+    @contextmanager
+    def get_container(self):
+        try:
+            container_id = self._available_workers.pop(0)
+            container = self.client.containers.get(container_id)
+        except IndexError:
+            logger.warning("No containers in pool when container requested, spawning container now")
+            container = self._start_container()
+        self._running_workers[container.id] = container.id
+        yield container
+        # We are now finished with the container so stop it
+        del self._running_workers[container.id]
+        container.stop(timeout=self.CONTAINER_STOP_TIMEOUT)
 
     def _start_container(self):
-        container = self.client.containers.run(self.image_name, auto_remove=True, detach=True)
+        container = self.client.containers.run(self.image_name, auto_remove=True, detach=True, network_disabled=True)
         return container
 
     def _ensure_minimum_containers(self):
@@ -100,17 +107,12 @@ class Pool:
             container.stop(timeout=self.CONTAINER_STOP_TIMEOUT)
 
     def _container_respawner_process(self, queue):
-        try:
-            while True:
-                self._ensure_minimum_containers()
-                try:
-                    msg = queue.get(block=True, timeout=0.5)  # TODO: Make timeout configurable
-                    if msg == "STOP":
-                        logger.info("Pool manager received stop command, shutting down containers")
-                        self._shutdown_all_containers()
-                        break
-                except Empty:
-                    pass  # We don't care if the queue is empty
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("Application exiting, shutting down containers")
-            self._shutdown_all_containers()
+        while True:
+            self._ensure_minimum_containers()
+            try:
+                msg = queue.get(block=True, timeout=0.5)  # TODO: Make timeout configurable
+                if msg == "STOP":
+                    self._shutdown_all_containers()
+                    break
+            except Empty:
+                pass  # We don't care if the queue is empty

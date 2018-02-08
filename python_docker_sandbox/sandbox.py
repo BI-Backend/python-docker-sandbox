@@ -43,8 +43,16 @@ class Sandbox:
         self.pool.start_pool_manager()
 
         import time
-        time.sleep(10)
-        self.pool.stop_pool_manager()
+        time.sleep(5)
+        while True:
+            with self.pool.get_container() as container:
+                print(container.exec_run("uname -a"))
+            time.sleep(0.25)
+
+        # import time
+        # time.sleep(5)
+        # print(self.pool._available_workers)
+        # self.pool.stop_pool_manager()
 
         # self.pool._ensure_minimum_containers()
         #
