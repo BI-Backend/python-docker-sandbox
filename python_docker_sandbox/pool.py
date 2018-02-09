@@ -6,8 +6,6 @@ from contextlib import contextmanager
 from multiprocessing import Process, Queue, Manager
 from queue import Empty
 
-import atexit
-
 logger = logging.getLogger(__name__)
 manager = Manager()
 
@@ -27,8 +25,6 @@ class Pool:
         self._running_workers = manager.dict()  # TODO: Is there a better structure than this than a dict?
         self.pool_manager_process = None
         self.pool_manager_queue = None
-
-        atexit.register(self._shutdown_all_containers)  # TODO: Work out why this doesn't work!
 
     def build_image(self):
         # TODO: Validate that this installs the specific package version!
