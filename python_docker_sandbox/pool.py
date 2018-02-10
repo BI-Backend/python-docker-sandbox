@@ -1,10 +1,13 @@
 import io
 import logging
-import time
+import os
+import tarfile
 from contextlib import contextmanager
 
 from multiprocessing import Process, Queue, Manager
 from queue import Empty
+
+import time
 
 logger = logging.getLogger(__name__)
 manager = Manager()
@@ -31,15 +34,33 @@ class Pool:
 
         # The container should run "tail -f /dev/null" as this will block and keep the container running, this also
         # doesn't require a TTY or STDIN to be open unlike other alternatives such as by running sh or cat
-        dockerfile_commands = [f"FROM {self.base_image}", "CMD [ \"tail\", \"-f\", \"/dev/null\" ]"]
+        container_tools_directory = os.path.join(os.path.dirname(os.path.abspath(__file__)), "container_tools")
+
+        dockerfile_commands = [
+            f"FROM {self.base_image}",
+            "COPY container_tools/ /container_tools",
+            "RUN chmod -R +x /container_tools/sbin/",
+            "CMD [ \"/container_tools/sbin/container_timeout.py\", \"timeout\" ]"
+        ]
         for package in self.required_packages:
             dockerfile_commands.append(f"RUN pip install --no-cache-dir {package}")
 
-        # Docker library wants a file, so convert our dockerfile array to a string then wrap in a file-like object
-        dockerfile = io.BytesIO("\n".join(dockerfile_commands).encode("UTF-8"))
+        print(dockerfile_commands)
 
-        logger.info("Building image")
-        self.client.images.build(fileobj=dockerfile, tag=self.image_name)
+        # Docker library wants a file, so convert our dockerfile array to a string then wrap in a file-like object
+        dockerfile_string = "\n".join(dockerfile_commands)
+
+        # Create in memory tar archive containing the build context
+        # TODO: Try and get this working with an in memory fileobj instead of a temp file
+        with tarfile.open(name="/tmp/build_context.tar", mode="w") as tar:
+            dockerfile_info = tarfile.TarInfo("dockerfile")
+            dockerfile_info.size = len(dockerfile_string)
+            tar.addfile(dockerfile_info, io.BytesIO(dockerfile_string.encode("UTF-8")))
+            tar.add(container_tools_directory, arcname="container_tools")
+
+        with open("/tmp/build_context.tar", "rb") as f:
+            logger.info("Building image")
+            self.client.images.build(fileobj=f, custom_context=True, tag=self.image_name)
         logger.info("Image created")
 
     def start_pool_manager(self):

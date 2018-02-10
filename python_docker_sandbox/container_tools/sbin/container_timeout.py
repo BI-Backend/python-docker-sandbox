@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 This script is executed inside containers managed by the sandbox.  It will cause the sandbox to exit after a
 predetermined period of time, this timeout can be reset by the pool manager by calling a command within the container.
