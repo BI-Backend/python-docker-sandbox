@@ -15,6 +15,9 @@ manager = Manager()
 
 class Pool:
     CONTAINER_STOP_TIMEOUT = 0
+    # How long to wait between issuing reset commands to containers, should be less than the actual timeout interval
+    # within the container to ensure some margin for error
+    CONTAINER_RESETTER_INTERVAL_SECONDS = 3
 
     def __init__(self, client, image_suffix, min_pool_size, min_available, required_packages, base_image):
         self.client = client
@@ -28,6 +31,8 @@ class Pool:
         self._running_workers = manager.dict()  # TODO: Is there a better structure than this than a dict?
         self.pool_manager_process = None
         self.pool_manager_queue = None
+        self.container_timeout_resetter_process = None
+        self.container_timeout_resetter_queue = None
 
     def build_image(self):
         # TODO: Validate that this installs the specific package version!
@@ -62,6 +67,17 @@ class Pool:
             logger.info("Building image")
             self.client.images.build(fileobj=f, custom_context=True, tag=self.image_name)
         logger.info("Image created")
+
+    def start_container_timeout_resetter(self):
+        self.container_timeout_resetter_queue = Queue()
+        self.container_timeout_resetter_process = Process(target=self._container_respawner_process,
+                                            args=((self.container_timeout_resetter_queue),))
+        self.container_timeout_resetter_process.start()
+
+    def stop_container_timeout_resetter(self):
+        logger.info("Shutting down container timeout resetter")
+        self.container_timeout_resetter_queue.put("STOP")
+        self.container_timeout_resetter_queue.join()
 
     def start_pool_manager(self):
         self.pool_manager_queue = Queue()
@@ -130,6 +146,24 @@ class Pool:
                 msg = queue.get(block=True, timeout=0.5)  # TODO: Make timeout configurable
                 if msg == "STOP":
                     self._shutdown_all_containers()
+                    break
+            except Empty:
+                pass  # We don't care if the queue is empty
+
+    def _container_timeout_resetter(self, queue):
+
+        while True:
+            next_reset_timestamp = int(time.time()) + self.CONTAINER_RESETTER_INTERVAL_SECONDS
+
+            container_ids_to_reset = self._available_workers + list(self._running_workers.values())
+            for container_id in container_ids_to_reset:
+                self.client.containers.get(container_id).exec_run("/container_tools/sbin/container_timeout.py reset")
+
+            try:
+                # Work out how long to wait until the time matches next_reset_timestamp
+                timeout_seconds = (next_reset_timestamp - int(time.time())) or 0
+                msg = queue.get(block=True, timeout=timeout_seconds)
+                if msg == "STOP":
                     break
             except Empty:
                 pass  # We don't care if the queue is empty

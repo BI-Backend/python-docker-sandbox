@@ -44,11 +44,10 @@ class Sandbox:
 
         import time
 
-        time.sleep(5)
-        # while True:
-        #     with self.pool.get_container() as container:
-        #         print(container.exec_run("uname -a"))
-        #     time.sleep(0.25)
+        while True:
+            with self.pool.get_container() as container:
+                print(container.exec_run("uname -a"))
+            time.sleep(1)
 
         # import time
         # time.sleep(5)
