@@ -12,7 +12,7 @@ Commands:
 import time
 import sys
 
-TIMEOUT_SECONDS = 5
+TIMEOUT_SECONDS = 30
 CHECK_INTERVAL_SECONDS = 1
 TIMESTAMP_FILE = "/var/run/container_timeout.ts"
 

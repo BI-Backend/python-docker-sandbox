@@ -4,13 +4,13 @@ import os
 import tarfile
 from contextlib import contextmanager
 
-from multiprocessing import Process, Queue, Manager
 from queue import Empty
 
 import time
+import multiprocessing
+mp_ctx = multiprocessing.get_context("spawn")
 
 logger = logging.getLogger(__name__)
-manager = Manager()
 
 
 class Pool:
@@ -27,6 +27,7 @@ class Pool:
         self.required_packages = required_packages
         self.base_image = base_image
 
+        manager = mp_ctx.Manager()
         self._available_workers = manager.list()
         self._running_workers = manager.dict()  # TODO: Is there a better structure than this than a dict?
         self.pool_manager_process = None
@@ -69,8 +70,8 @@ class Pool:
         logger.info("Image created")
 
     def start_container_timeout_resetter(self):
-        self.container_timeout_resetter_queue = Queue()
-        self.container_timeout_resetter_process = Process(target=self._container_respawner_process,
+        self.container_timeout_resetter_queue = mp_ctx.Queue()
+        self.container_timeout_resetter_process = mp_ctx.Process(target=self._container_respawner_process,
                                             args=((self.container_timeout_resetter_queue),))
         self.container_timeout_resetter_process.start()
 
@@ -80,8 +81,8 @@ class Pool:
         self.container_timeout_resetter_queue.join()
 
     def start_pool_manager(self):
-        self.pool_manager_queue = Queue()
-        self.pool_manager_process = Process(target=self._container_respawner_process, args=((self.pool_manager_queue),))
+        self.pool_manager_queue = mp_ctx.Queue()
+        self.pool_manager_process = mp_ctx.Process(target=self._container_respawner_process, args=((self.pool_manager_queue),))
         self.pool_manager_process.start()
 
     def stop_pool_manager(self):
