@@ -44,10 +44,11 @@ class Sandbox:
 
         import time
         time.sleep(5)
+        self.pool.start_container_timeout_resetter()
         while True:
-            print("RUNNING COMMAND")
-            with self.pool.get_container() as container:
-                print(container.exec_run("uname -a"))
+            # print("RUNNING COMMAND")
+            # with self.pool.get_container() as container:
+            #     print(container.exec_run("uname -a"))
             time.sleep(1)
 
         # import time

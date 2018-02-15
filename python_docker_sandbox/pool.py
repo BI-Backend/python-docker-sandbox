@@ -8,7 +8,8 @@ from queue import Empty
 
 import time
 import multiprocessing
-mp_ctx = multiprocessing.get_context("spawn")
+# TODO: Investigate this, seems to reqire fork when using a UNIX socket and spawn if using TCP.
+mp_ctx = multiprocessing.get_context("fork")
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class Pool:
 
     def start_container_timeout_resetter(self):
         self.container_timeout_resetter_queue = mp_ctx.Queue()
-        self.container_timeout_resetter_process = mp_ctx.Process(target=self._container_respawner_process,
+        self.container_timeout_resetter_process = mp_ctx.Process(target=self._container_timeout_resetter,
                                             args=((self.container_timeout_resetter_queue),))
         self.container_timeout_resetter_process.start()
 
