@@ -9,6 +9,8 @@ from queue import Empty
 import time
 import multiprocessing
 # TODO: Investigate this, seems to reqire fork when using a UNIX socket and spawn if using TCP.
+import docker.errors
+
 mp_ctx = multiprocessing.get_context("fork")
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,7 @@ class Pool:
     # How long to wait between issuing reset commands to containers, should be less than the actual timeout interval
     # within the container to ensure some margin for error
     CONTAINER_RESETTER_INTERVAL_SECONDS = 3
+    DEAD_CONTAINER_CLEANUP_INTERVAL_SECONDS = 5
 
     def __init__(self, client, image_suffix, min_pool_size, min_available, required_packages, base_image):
         self.client = client
@@ -35,6 +38,8 @@ class Pool:
         self.pool_manager_queue = None
         self.container_timeout_resetter_process = None
         self.container_timeout_resetter_queue = None
+        self.dead_container_cleanup_process = None
+        self.dead_container_cleanup_queue = None
 
     def build_image(self):
         # TODO: Validate that this installs the specific package version!
@@ -72,8 +77,8 @@ class Pool:
 
     def start_container_timeout_resetter(self):
         self.container_timeout_resetter_queue = mp_ctx.Queue()
-        self.container_timeout_resetter_process = mp_ctx.Process(target=self._container_timeout_resetter,
-                                            args=((self.container_timeout_resetter_queue),))
+        self.container_timeout_resetter_process = mp_ctx.Process(target=self._container_timeout_resetter_process,
+                                                                 args=((self.container_timeout_resetter_queue),))
         self.container_timeout_resetter_process.start()
 
     def stop_container_timeout_resetter(self):
@@ -91,14 +96,33 @@ class Pool:
         self.pool_manager_queue.put("STOP")
         self.pool_manager_process.join()
 
+    def start_dead_container_cleanup_process(self):
+        self.dead_container_cleanup_queue = mp_ctx.Queue()
+        self.dead_container_cleanup_process = mp_ctx.Process(target=self._dead_container_cleanup_process,
+                                                   args=((self.dead_container_cleanup_queue),))
+        self.dead_container_cleanup_process.start()
+
+    def stop_dead_container_cleanup_process(self):
+        logger.info("Shutting down dead container cleanup process")
+        self.dead_container_cleanup_queue.put("STOP")
+        self.dead_container_cleanup_process.join()
+
     @contextmanager
     def get_container(self):
-        try:
-            container_id = self._available_workers.pop(0)
-            container = self.client.containers.get(container_id)
-        except IndexError:
-            logger.warning("No containers in pool when container requested, spawning container now")
-            container = self._start_container()
+        container = None
+        container_found = False
+        while not container_found:
+            try:
+                container_id = self._available_workers.pop(0)
+                container = self.client.containers.get(container_id)
+            except docker.errors.NotFound:
+                logger.warning("Container ID retrieved from the pool was not running, attempting to get another")
+                continue
+            except IndexError:
+                logger.warning("No containers in pool when container requested, spawning container now")
+                container = self._start_container()
+            container_found = True
+
         self._running_workers[container.id] = container.id
         yield container
         # We are now finished with the container so stop it
@@ -129,7 +153,7 @@ class Pool:
             container = self._start_container()
             self._available_workers.append(container.id)
 
-        logger.info(f"{len(self._available_workers) + len(self._running_workers)} workers are currently running")
+        logger.debug(f"{len(self._available_workers) + len(self._running_workers)} workers are currently running")
 
     def _shutdown_all_containers(self):
         containers_to_stop = list(self._available_workers) + list(self._running_workers.values())
@@ -152,19 +176,49 @@ class Pool:
             except Empty:
                 pass  # We don't care if the queue is empty
 
-    def _container_timeout_resetter(self, queue):
-
+    def _container_timeout_resetter_process(self, queue):
         while True:
             next_reset_timestamp = int(time.time()) + self.CONTAINER_RESETTER_INTERVAL_SECONDS
 
             container_ids_to_reset = self._available_workers + list(self._running_workers.values())
             for container_id in container_ids_to_reset:
-                self.client.containers.get(container_id).exec_run("/container_tools/sbin/container_timeout.py reset")
+                try:
+                    container = self.client.containers.get(container_id)
+                except docker.errors.NotFound:
+                    logger.warning("Attempted to reset timeout on a container from pool but container did not exist,"
+                                   " skipping...")
+                    continue
+                container.exec_run("/container_tools/sbin/container_timeout.py reset")
 
             try:
                 # Work out how long to wait until the time matches next_reset_timestamp
                 timeout_seconds = (next_reset_timestamp - int(time.time())) or 0
                 msg = queue.get(block=True, timeout=timeout_seconds)
+                if msg == "STOP":
+                    break
+            except Empty:
+                pass  # We don't care if the queue is empty
+
+    def _dead_container_cleanup_process(self, queue):
+        while True:
+            all_container_ids = self._available_workers + list(self._running_workers.values())
+            for container_id in all_container_ids:
+                container_dead = False
+                try:
+                    self.client.containers.get(container_id)
+                except docker.errors.NotFound:
+                    logger.warning("Dead container found, forgetting...")
+                    container_dead = True
+
+                if container_dead:
+                    try:
+                        self._available_workers.remove(container_id)
+                        del self._running_workers[container_id]
+                    except (ValueError, KeyError):
+                        pass
+
+            try:
+                msg = queue.get(block=True, timeout=self.DEAD_CONTAINER_CLEANUP_INTERVAL_SECONDS)
                 if msg == "STOP":
                     break
             except Empty:

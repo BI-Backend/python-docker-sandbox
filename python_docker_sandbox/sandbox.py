@@ -45,6 +45,7 @@ class Sandbox:
         import time
         time.sleep(5)
         self.pool.start_container_timeout_resetter()
+        self.pool.start_dead_container_cleanup_process()
         while True:
             # print("RUNNING COMMAND")
             # with self.pool.get_container() as container:

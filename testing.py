@@ -1,7 +1,7 @@
 from python_docker_sandbox.sandbox import Sandbox
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 
 def main():
