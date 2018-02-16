@@ -24,6 +24,16 @@ class Pool:
     DEAD_CONTAINER_CLEANUP_INTERVAL_SECONDS = 5
 
     def __init__(self, client, image_suffix, min_pool_size, min_available, required_packages, base_image):
+        """
+        Initialises a pool object
+        :param client: - An instance of docker.DockerClient
+        :param image_suffix: - The suffix to apply to the created image name, must be unique to this pool instance
+        :param min_pool_size: - The minimum number of workers that must be either running or available at a given time
+        :param min_available: - The minimum of workers that must be available for use at a given time
+        :param required_packages: - A list of packages to be installed, each entry should be in a format understood by
+                                    pip (either a package name on its own or with version restrictions)
+        :param base_image: - The name of a docker image to base the custom image on.  Must include python and pip.
+        """
         self.client = client
         self.image_name = f"sandbox-{image_suffix}"
         self.min_pool_size = min_pool_size
@@ -42,6 +52,10 @@ class Pool:
         self.dead_container_cleanup_queue = None
 
     def build_image(self):
+        """
+        Builds a docker image based on the requirements specified at pool initialisation
+        :return:
+        """
         # TODO: Validate that this installs the specific package version!
 
         # The container should run "tail -f /dev/null" as this will block and keep the container running, this also
@@ -76,39 +90,71 @@ class Pool:
         logger.info("Image created")
 
     def start_container_timeout_resetter(self):
+        """
+        Starts _container_timeout_resetter_process running in the background
+        :return:
+        """
         self.container_timeout_resetter_queue = mp_ctx.Queue()
         self.container_timeout_resetter_process = mp_ctx.Process(target=self._container_timeout_resetter_process,
                                                                  args=((self.container_timeout_resetter_queue),))
         self.container_timeout_resetter_process.start()
 
     def stop_container_timeout_resetter(self):
+        """
+        Issues a stop command to _container_timeout_resetter_process and waits for it to exit
+        :return:
+        """
         logger.info("Shutting down container timeout resetter")
         self.container_timeout_resetter_queue.put("STOP")
         self.container_timeout_resetter_queue.join()
 
     def start_pool_manager(self):
+        """
+        Starts _container_respawner_process running in the background
+        :return:
+        """
         self.pool_manager_queue = mp_ctx.Queue()
-        self.pool_manager_process = mp_ctx.Process(target=self._container_respawner_process, args=((self.pool_manager_queue),))
+        self.pool_manager_process = mp_ctx.Process(target=self._container_respawner_process,
+                                                   args=((self.pool_manager_queue),))
         self.pool_manager_process.start()
 
     def stop_pool_manager(self):
+        """
+        Issues a stop command to _container_respawner_process and waits for it to exit
+        :return:
+        """
         logger.info("Shutting down pool manager")
         self.pool_manager_queue.put("STOP")
         self.pool_manager_process.join()
 
     def start_dead_container_cleanup_process(self):
+        """
+        Starts _dead_container_cleanup_process running in the background
+        :return:
+        """
         self.dead_container_cleanup_queue = mp_ctx.Queue()
         self.dead_container_cleanup_process = mp_ctx.Process(target=self._dead_container_cleanup_process,
                                                    args=((self.dead_container_cleanup_queue),))
         self.dead_container_cleanup_process.start()
 
     def stop_dead_container_cleanup_process(self):
+        """
+        Issues a stop command to _dead_container_cleanup_process and waits for it to exit
+        :return:
+        """
         logger.info("Shutting down dead container cleanup process")
         self.dead_container_cleanup_queue.put("STOP")
         self.dead_container_cleanup_process.join()
 
     @contextmanager
     def get_container(self):
+        """
+        Removes a container from the list of available workers, adds it to the dict of running workers and then returns
+        it. This acts as a context manager so when the context runtime is exited the container will be stopped and
+        forgotten about so that a new, clean container can be spawned by the respawner process. Yields a container
+        object.
+        :return:
+        """
         container = None
         container_found = False
         while not container_found:
@@ -130,10 +176,19 @@ class Pool:
         container.stop(timeout=self.CONTAINER_STOP_TIMEOUT)
 
     def _start_container(self):
+        """
+        Starts a new container in the background
+        :return: - A container object
+        """
         container = self.client.containers.run(self.image_name, auto_remove=True, detach=True, network_disabled=True)
         return container
 
     def _ensure_minimum_containers(self):
+        """
+        Checks the total number of containers based on the thresholds defined at pool initialisaion and if there are
+        too few containers it will spawn the appropriate number of new ones.
+        :return:
+        """
         available_workers = len(self._available_workers)
         total_workers = available_workers + len(self._running_workers)
 
@@ -156,6 +211,10 @@ class Pool:
         logger.debug(f"{len(self._available_workers) + len(self._running_workers)} workers are currently running")
 
     def _shutdown_all_containers(self):
+        """
+        Loops through all containers and shuts them down
+        :return:
+        """
         containers_to_stop = list(self._available_workers) + list(self._running_workers.values())
 
         logger.info(f"Shutting down {len(containers_to_stop)} containers")
@@ -166,6 +225,13 @@ class Pool:
             container.stop(timeout=self.CONTAINER_STOP_TIMEOUT)
 
     def _container_respawner_process(self, queue):
+        """
+        This process runs at a regular interval and checks how many containers are currently running, if there is an
+        insufficient number (based on the thresholds supplied when the pool was initialised) it will spawn additional
+        containers.
+        :param queue: - A multiprocessing queue, this is used to stop the process by sending the string "STOP"
+        :return:
+        """
         while True:
             self._ensure_minimum_containers()
             try:
@@ -177,6 +243,13 @@ class Pool:
                 pass  # We don't care if the queue is empty
 
     def _container_timeout_resetter_process(self, queue):
+        """
+        This process regularly executes the container timeout reset command on all containers to ensure that they do
+        not timeout.  It will skip any containers who have an ID stored in the pool but do not exist within docker (e.g.
+        if the container has failed or was stopped by and external process)
+        :param queue: - A multiprocessing queue, this is used to stop the process by sending the string "STOP"
+        :return:
+        """
         while True:
             next_reset_timestamp = int(time.time()) + self.CONTAINER_RESETTER_INTERVAL_SECONDS
 
@@ -200,6 +273,14 @@ class Pool:
                 pass  # We don't care if the queue is empty
 
     def _dead_container_cleanup_process(self, queue):
+        """
+        This process regularly checks that all of the container IDs stored in both the running workers and available
+        workers lists are actually still running within docker, if not it will remove the process from the appropriate
+        list.  This ensures that containers which have potentially crashed or otherwise failed are forgotten about so
+        that they can be respawned by the respawner process.
+        :param queue: - A multiprocessing queue, this is used to stop the process by sending the string "STOP"
+        :return:
+        """
         while True:
             all_container_ids = self._available_workers + list(self._running_workers.values())
             for container_id in all_container_ids:

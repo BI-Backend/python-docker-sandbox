@@ -10,7 +10,7 @@ def main():
     #                   client_key="/Users/camerong/.docker/machine/certs/key.pem",
     #                   client_verify="/Users/camerong/.docker/machine/certs/ca.pem")
     sandbox = Sandbox()
-    sandbox.init_pool("testing", required_packages=["tabulate", "flask"])
+    sandbox.init_pool("testing", required_packages=["tabulate", "flask"], min_pool_size=10)
 
 
 if __name__ == "__main__":
