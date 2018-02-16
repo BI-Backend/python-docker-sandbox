@@ -43,7 +43,7 @@ class Pool:
 
         manager = mp_ctx.Manager()
         self._available_workers = manager.list()
-        self._running_workers = manager.dict()  # TODO: Is there a better structure than this than a dict?
+        self._running_workers = manager.list()
         self.pool_manager_process = None
         self.pool_manager_queue = None
         self.container_timeout_resetter_process = None
@@ -169,10 +169,10 @@ class Pool:
                 container = self._start_container()
             container_found = True
 
-        self._running_workers[container.id] = container.id
+        self._running_workers.append(container.id)
         yield container
         # We are now finished with the container so stop it
-        del self._running_workers[container.id]
+        self._running_workers.remove(container.id)
         container.stop(timeout=self.CONTAINER_STOP_TIMEOUT)
 
     def _start_container(self):
@@ -215,7 +215,7 @@ class Pool:
         Loops through all containers and shuts them down
         :return:
         """
-        containers_to_stop = list(self._available_workers) + list(self._running_workers.values())
+        containers_to_stop = list(self._available_workers) + list(self._running_workers)
 
         logger.info(f"Shutting down {len(containers_to_stop)} containers")
 
@@ -253,7 +253,7 @@ class Pool:
         while True:
             next_reset_timestamp = int(time.time()) + self.CONTAINER_RESETTER_INTERVAL_SECONDS
 
-            container_ids_to_reset = self._available_workers + list(self._running_workers.values())
+            container_ids_to_reset = self._available_workers + list(self._running_workers)
             for container_id in container_ids_to_reset:
                 try:
                     container = self.client.containers.get(container_id)
@@ -282,7 +282,7 @@ class Pool:
         :return:
         """
         while True:
-            all_container_ids = self._available_workers + list(self._running_workers.values())
+            all_container_ids = self._available_workers + list(self._running_workers)
             for container_id in all_container_ids:
                 container_dead = False
                 try:
@@ -294,7 +294,7 @@ class Pool:
                 if container_dead:
                     try:
                         self._available_workers.remove(container_id)
-                        del self._running_workers[container_id]
+                        self._running_workers.remove(container_id)
                     except (ValueError, KeyError):
                         pass
 
